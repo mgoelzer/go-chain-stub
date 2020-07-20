@@ -1,0 +1,251 @@
+package cli
+
+import (
+	"fmt"
+	"bytes"
+	"errors"
+	"encoding/base64"
+
+//	types "github.com/filecoin-project/lotus/chain/types"
+	"math/big"
+	big2 "github.com/filecoin-project/specs-actors/actors/abi/big"
+	"github.com/filecoin-project/specs-actors/actors/abi"
+
+
+	"github.com/filecoin-project/go-address"
+
+
+	"github.com/filecoin-project/specs-actors/actors/builtin"
+	init_ "github.com/filecoin-project/specs-actors/actors/builtin/init"
+	paych "github.com/filecoin-project/specs-actors/actors/builtin/paych"
+	cbg "github.com/whyrusleeping/cbor-gen"
+//	"github.com/ipfs/go-cid"
+//	"golang.org/x/xerrors"
+)
+
+type BigInt = big2.Int
+
+func actorsSerializeParams(i cbg.CBORMarshaler) ([]byte, error) {
+	buf := new(bytes.Buffer)
+	if err := i.MarshalCBOR(buf); err != nil {
+		return nil, errors.New("failed to encode parameter")
+	}
+	return buf.Bytes(), nil
+}
+
+type Message struct {
+	Version int64
+
+	To   address.Address
+	From address.Address
+
+	Nonce uint64
+
+	Value BigInt
+
+	GasPrice BigInt
+	GasLimit int64
+
+	Method abi.MethodNum
+	Params []byte
+}
+
+func main() {
+	// The main function here is just to demonstrate the full sequence of steps.
+	// Pretend this is written in Javascript.
+
+	// Query the go stub program's `/paymentchannel/create/` endpoint.
+	// The go stub program will exec the following to give us a CBOR encoding compatible
+	// Message struct
+	msg, err := generateMessageForSigning(toBase32Str string, fromBase32Str string, amountBase10 Int)
+	if err != nil {
+		fmt.Errorf("generateMessageForSigning: faled");
+	}
+
+	// The commented block below is done in JS by the Zondax library except now we'll be
+	// able to populate the Params field.
+	//
+	//smsg, err := pm.mpool.MpoolPushMessage(ctx, msg)
+	//if err != nil {
+	//	return cid.Undef, xerrors.Errorf("initializing paych actor: %w", err)
+	//}
+	//mcid := smsg.Cid()
+
+	mcid := cid.Undef;    // dummy value
+
+	for {
+		exitCode, returnBase64Str, gasUsed, err := pollForReceipt(mcid)
+		if err == nil {
+			returnBytes, _ := b64.StdEncoding.DecodeString(returnBase64Str,)
+			paychaddr,err := decodeReceipt(exitCode, returnBytes, gasUsed)
+			if err != nil {
+				fmt.Errorf("decodeReceipt: failed")
+				return
+			}
+			break
+		} else {
+			// TODO:  sleep here for a second before we retry polling on next iter
+		}
+	}
+
+	fmt.Println(paychaddr.String())  // This is what the CLI prints
+}
+
+func generateMessageForSigning(toBase32Str string, fromBase32Str string, amountBase10 Int) (*Message,err) {
+	// From and To addresses  are just whatever user typed on CLI
+	from, err := address.NewFromString("t1ymsm3e4tavw4dsc6raxk6dioxi4coio4sp37lzq")
+	if err != nil {
+		fmt.Errorf("failed to parse from address: %s", err)
+		return nil, err
+	}
+
+	to, err := address.NewFromString("t1s7gtdondylx5osaaijo4bqdyqhzzs4fyb56eb7i")
+	if err != nil {
+		fmt.Errorf("failed to parse to address: %s", err)
+		return nil, err
+	}
+
+	//30 is just an Int with whatever number the user enters on CLI.
+	amt := BigInt{Int: big.NewInt(30)}
+
+
+	///////////////////////////////////////////////////////////////
+	//
+	// Code from lotus/paychmgr/simple.go
+	//
+	///////////////////////////////////////////////////////////////
+
+	params, aerr := actorsSerializeParams(&paych.ConstructorParams{From: from, To: to})
+	if aerr != nil {
+		fmt.Errorf("Failed at actorsSerializeParams(from,to)")
+		return nil,aerr
+	}
+
+	enc, aerr := actorsSerializeParams(&init_.ExecParams{
+		CodeCID:           builtin.PaymentChannelActorCodeID,
+		ConstructorParams: params,
+	})
+	if aerr != nil {
+		fmt.Errorf("Failed at actorsSerializeParams(init_")
+		return nil,aerr
+	}
+
+	msg := &types.Message{
+		To:       builtin.InitActorAddr,
+		From:     from,
+		Value:    amt,
+		Method:   builtin.MethodsInit.Exec,
+		Params:   enc,
+		GasLimit: 1000000,
+		GasPrice: types.NewInt(0),
+	}
+
+	//
+	// All that's missing from above is Nonce and Signature:
+	//	Nonce - this can be determined by calling API method 
+	//		MpoolGetNonce(address.Address) for the "from" address
+	//	Signature - but we don't need this in go, the Zondax library can 
+	//		already do that
+	//
+
+}
+
+func pollForReceipt(mcid cid.Cid, MessageConfidence uint64 = 5) (Int64, string, UInt64, err) {
+	// The purpose of this routine is to wait for our submitted message's Receipt,
+	// and then wait 5 (arbitrary) more epochs to confirm that the message is 
+	// not likely to be rejected.
+	//
+	// TODO:
+	// 1.  Write code to scan the messages appearing on new blocks until we see
+	// a receipt for our message message (mcid)
+	// 2.  Decode the receipt into the tuple {exitCode, ReturnString, gasUsed}
+	// 3.  If the height of mcid + 5 <= current tipset height, then return immediately
+	// with ERROR_NOT_READY.  Else, return immediately with {exitCode, ReturnString, gasUsed}.
+
+	// Note: the above is to replace the following Lotus code, which blocks
+	//
+	//defer pm.store.lk.Unlock()
+	//mwait, err := pm.state.StateWaitMsg(ctx, mcid, build.MessageConfidence)
+	//if err != nil {
+	//	log.Errorf("wait msg: %w", err)
+	//	return
+	//}
+	//
+	//if mwait.Receipt.ExitCode != 0 {
+	//	log.Errorf("payment channel creation failed (exit code %d)", mwait.Receipt.ExitCode)
+	//	return
+	//}
+
+	// Return dummy data for now
+	return 0,"TzLsta5iEBaiWoZjvfK+9hwIDAkKk9UAUPnmUwCtT5EuqYVofXWfpzJw==",1000,nil
+}
+
+func decodeReceipt(exitCode Int64, returnBytes []byte, gasUsed UInt64) (*address.Address,err) {
+	// This function decodes the receipt and returns the payment channel address.
+
+
+	///////////////////////////////////////////////////////////////
+	//
+	// Code from lotus/paychmgr/simple.go
+	//
+	///////////////////////////////////////////////////////////////
+	var decodedReturn init_.ExecReturn
+	err = decodedReturn.UnmarshalCBOR(bytes.NewReader(returnBytes))
+	if err != nil {
+		log.Error(err)
+		return nil,err
+	}
+	paychaddr := decodedReturn.RobustAddress
+
+	//
+	// Note: 'pm' is the payment channel manager inside Lotus.  We can
+	// ignore this for an MVP since we are not implementing the full
+	// protocol that Lotus does.
+	//
+	//ci, err := pm.loadOutboundChannelInfo(ctx, paychaddr)
+	//if err != nil {
+	//	log.Errorf("loading channel info: %w", err)
+	//	return
+	//}
+	//
+	//if err := pm.store.trackChannel(ci); err != nil {
+	//	log.Errorf("tracking channel: %w", err)
+	//}
+
+
+	///////////////////////////////////////////////////////////////
+	//
+	// Code continues in lotus/paychmgr/store.go
+	//
+	///////////////////////////////////////////////////////////////
+
+	//
+	//res, err := ps.ds.Query(dsq.Query{})
+	//if err != nil {
+	//	return address.Undef, err
+	//}
+	//defer res.Close() //nolint:errcheck
+	//
+	//
+	//var ci ChannelInfo
+	//
+	//if err := ci.UnmarshalCBOR(bytes.NewReader(res.Value)); err != nil {
+	//	return address.Undef, err
+	//}
+	//
+	//addr, err := address.NewFromString(strings.TrimPrefix(res.Key, "/"))
+	//if err != nil {
+	//	return address.Undef, xerrors.Errorf("failed reading paych key (%q) from datastore: %w", res.Key, err)
+	//}
+
+	/////////////////////////////////////////////////////////////
+	//
+	// We are done!
+	//	addr = the payment channel (address.Address)
+	//	mcid = the return value from mpoolpushmessage (cid.Cid)
+	//
+	/////////////////////////////////////////////////////////////
+
+	//return addr, mcid  // Not returning these because we already have them
+	return paychaddr;    // Instead, we just need to return the address
+}
